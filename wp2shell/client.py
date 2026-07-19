@@ -17,6 +17,7 @@ from typing import Any, Optional
 # used so it cannot be mistaken for a network target.
 _DESYNC_PRIMER = {"method": "POST", "path": "///"}
 _BATCH_MARKER_CODES = ("parse_path_failed", "block_cannot_read", "rest_batch_not_allowed")
+POSTS_ITEM_SOURCE_PATH = "/wp/v2/posts/999999"
 
 
 class TargetError(Exception):
@@ -166,7 +167,7 @@ class BatchClient:
         inner = {
             "requests": [
                 _DESYNC_PRIMER,
-                {"method": "GET", "path": "/wp/v2/posts/999999?" + query},
+                {"method": "GET", "path": POSTS_ITEM_SOURCE_PATH + "?" + query},
                 {"method": "GET", "path": "/wp/v2/posts"},
             ]
         }
@@ -178,26 +179,38 @@ class BatchClient:
             ]
         }
 
-    def rows(self, response: Response) -> Optional[list]:
-        """Return the inner get_items() result rows from a nested batch response, else None."""
+    def match_count(self, response: Response) -> Optional[int]:
+        """Return X-WP-Total (the matched-row count) from the confused get_items response, else None.
+
+        The item-route source carries no ``page``, so the confused collection can paginate to an
+        empty ``body`` even when the injected condition matches rows -- but ``X-WP-Total`` still
+        reports the true count, so it, not the body list, is the reliable boolean signal.
+        """
         try:
             inner = response.json()["responses"][1]["body"]
-            result = inner["responses"][1]["body"]
+            headers = inner["responses"][1]["headers"]
         except (KeyError, IndexError, TypeError, ValueError):
             return None
-        return result if isinstance(result, list) else None
+        if not isinstance(headers, dict):
+            return None
+        try:
+            return int(headers.get("X-WP-Total"))
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _payload(author_not_in: str) -> dict:
-        # Inner batch: a users request (whose collection schema has no `author_exclude`, so the
-        # value passes validation unchanged as a raw string) is desynced onto posts get_items(),
-        # which maps author_exclude -> WP_Query author__not_in.
+        # Inner batch: a GET on the single-post item route is validated as an item request, whose
+        # schema does not define the posts collection's `author_exclude` param. The desync then
+        # dispatches the same request under posts get_items(), which maps author_exclude ->
+        # WP_Query author__not_in.
         inner = {
             "requests": [
                 _DESYNC_PRIMER,
                 {
                     "method": "GET",
-                    "path": "/wp/v2/users?author_exclude="
+                    "path": POSTS_ITEM_SOURCE_PATH
+                    + "?author_exclude="
                     + urllib.parse.quote(author_not_in, safe=""),
                 },
                 {"method": "GET", "path": "/wp/v2/posts"},

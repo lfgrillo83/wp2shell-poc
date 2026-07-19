@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import shlex
 import sys
-from typing import Optional
+from typing import List, Optional
 
 from . import __version__
-from .client import BatchClient
+from .client import BatchClient, TargetError
 from .exploit import PreAuthAdminCreator
 from .shell import AdminSession
 from .sqli import BlindSQLi, ErrorBasedSQLi, UnionSQLi
@@ -99,10 +101,62 @@ def _print_version_hints(client: BatchClient) -> tuple:
 # -- commands ---------------------------------------------------------------
 
 
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _resolve_targets(value: str) -> List[str]:
+    """Resolve the check target: a single URL, or the http(s):// URLs listed in a file.
+
+    A file is accepted only if it actually contains http:// or https:// URLs. Lines without a
+    scheme (bare domains, comments, blanks) are ignored, and a file with no URLs is rejected.
+    """
+    if _URL_RE.search(value):
+        return [value.strip()]
+    if os.path.isfile(value):
+        urls: List[str] = []
+        seen = set()
+        with open(value, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                match = _URL_RE.search(line)
+                if match and match.group(0) not in seen:
+                    seen.add(match.group(0))
+                    urls.append(match.group(0))
+        if not urls:
+            raise ValueError(f"{value}: no http:// or https:// URLs found in file")
+        return urls
+    raise ValueError(f"{value!r} is not a URL (http[s]://...) or a file containing such URLs")
+
+
 def cmd_check(args: argparse.Namespace) -> int:
+    try:
+        targets = _resolve_targets(args.url)
+    except ValueError as exc:
+        bad(str(exc))
+        return 2
+    if len(targets) == 1:
+        return _check_one(targets[0], args)
+
+    info(f"Scanning {len(targets)} targets from {args.url}")
+    vulnerable = 0
+    for index, url in enumerate(targets, start=1):
+        print()
+        info(f"[{index}/{len(targets)}] {url}")
+        try:
+            rc = _check_one(url, args)
+        except TargetError as exc:
+            bad(str(exc))
+            rc = 1
+        if rc == 0:
+            vulnerable += 1
+    print()
+    (good if vulnerable else info)(f"Scan complete: {vulnerable}/{len(targets)} vulnerable.")
+    return 0 if vulnerable else 2
+
+
+def _check_one(url: str, args: argparse.Namespace) -> int:
     # The confirmation request sleeps for --sleep, so the timeout must exceed it.
     client = BatchClient(
-        args.url,
+        url,
         timeout=max(args.timeout, args.sleep + 10),
         proxy=args.proxy,
     )
@@ -366,7 +420,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"wp2shell {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    check = sub.add_parser("check", help="safely confirm the vulnerability (non-destructive)")
+    check = sub.add_parser(
+        "check",
+        help="confirm the vulnerability on a URL, or scan a file of URLs (non-destructive)",
+    )
     _add_common(check)
     check.add_argument(
         "--sleep",

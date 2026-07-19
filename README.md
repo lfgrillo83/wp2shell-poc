@@ -3,9 +3,6 @@
 Independent proof-of-concept for the unauthenticated WordPress REST batch route-confusion
 SQL injection associated with Searchlight Cyber's wp2shell advisory.
 
-The unauthenticated primitive reaches the injection through a single endpoint:
-`POST /wp-json/batch/v1`.
-
 This repository is not Searchlight Cyber's official checker. `check` confirms the SQLi path,
 `read` demonstrates database read, and `shell` opens a plugin-backed command shell either with
 supplied administrator credentials or by first exercising the SQLi-to-admin bridge.
@@ -39,10 +36,12 @@ The PoC nests the primitive twice:
    handler itself. Having been validated as a posts request, its `requests` list is never checked
    against the batch schema, so its sub-requests may use `GET` — the method allow-list is
    bypassed.
-2. Inside that inner batch, a `GET /wp/v2/users` request carrying an `author_exclude` string
-   (the users schema has no such parameter, so the value passes validation untouched) is
-   dispatched under posts `get_items()`. There `author_exclude` maps to the `WP_Query`
-   `author__not_in` query var, which the vulnerable build interpolates into SQL as a string.
+2. Inside that inner batch, a `GET /wp/v2/posts/999999` item-route request carries posts collection
+   query params such as `author_exclude`, `orderby`, and `per_page`. The `999999` ID does not need
+   to exist; it is just an unlikely post ID used to match the item route, whose schema does not
+   validate those collection-only params. The desync then dispatches the same request under posts
+   `get_items()`, where `author_exclude` maps to the `WP_Query` `author__not_in` query var, which
+   the vulnerable build interpolates into SQL as a string.
 
 The result is a boolean- and time-based blind SQL injection reachable pre-authentication. This PoC
 also includes the UNION fake-post primitive used by the SQLi-to-admin chain.
@@ -50,6 +49,8 @@ also includes the UNION fake-post primitive used by the SQLi-to-admin chain.
 The RCE path implemented here is:
 
 1. Use UNION fake `wp_posts` rows to render attacker-controlled content through a posts collection.
+   The render bridge uses the `/wp/v2/posts/999999` item-route source — the same route the SQLi read
+   uses to reach `get_items()`.
 2. Use that render to make WordPress create real oEmbed cache posts.
 3. Recover those real cache post IDs through the SQLi.
 4. In one poisoned batch request, recast those IDs as a customizer changeset, navigation item, and
@@ -57,8 +58,7 @@ The RCE path implemented here is:
 5. Let the same request reach `POST /wp/v2/users`, creating a generated administrator.
 6. Log in as that generated administrator and use plugin upload behavior to run a command.
 
-The command-execution step is authenticated administrator plugin upload. The pre-authentication
-part is the admin creation bridge.
+Steps 1–5 are pre-authentication; the command-execution step is authenticated admin plugin upload.
 
 ## Requirements
 
@@ -92,13 +92,13 @@ By default, `check` stops there and does not send an SQLi payload. Use `--confir
 also want an active SQLi confirmation. The confirmation tries the UNION read primitive first and
 falls back to paired timing probes if UNION reflection is unavailable.
 
-Treat the signals separately: a public version hint is only a hint, the batch marker pattern checks
-for the route-confusion behavior, and `--confirm-sqli` checks whether an SQL payload reached the
-database. A WAF or edge rule can block the active SQLi payload, so a failed SQLi confirmation does
-not necessarily mean the route-confusion bug is absent.
+The signals are independent: a version hint is only a hint, the marker pattern shows route
+confusion, and `--confirm-sqli` shows a payload reached the database. A WAF can block the payload,
+so a failed confirmation doesn't prove the bug is absent.
 
 ```
 ./wp2shell.py check http://target
+./wp2shell.py check targets.txt          # scan every URL in the file
 ```
 
 ### read — extract data through SQL injection
@@ -111,19 +111,16 @@ not necessarily mean the route-confusion bug is absent.
 
 By default extraction is `--technique auto`, which tries the available methods in this order:
 
-1. **union** — forges a fake `WP_Post` row and reads its reflected title.
-   The source request targets the single-post item route (`/wp/v2/posts/999999`), so the
-   collection-only params `author_exclude`, `orderby` and `per_page` ride through unchecked; the
-   inner desync dispatches it under the posts *collection* handler, where `orderby=none` removes the
-   trailing `ORDER BY` (which otherwise breaks `UNION`) and `per_page=500` keeps `WP_Query` in
-   full-row mode (so the union row survives instead of being re-primed from the DB). A whole value
-   comes back in the REST response as `||HEX(value)||`.
+1. **union** — forges a fake `WP_Post` row via `UNION` and reads its title back from the REST
+   response as `||HEX(value)||`. The payload uses the same `/wp/v2/posts/999999` source route with
+   `orderby=none` and `per_page=500` so the fake row survives as a rendered post. One request per
+   value.
 2. **error** — `EXTRACTVALUE`/`UPDATEXML` leak ~15 bytes per request, when the target reflects
    MySQL errors (e.g. `WP_DEBUG_DISPLAY` on).
-3. **blind** — boolean/timing binary search, ~8 requests per character; works with no reflection.
+3. **blind** — boolean binary search, ~8 requests per character; reads the posts collection
+   `X-WP-Total` header as the true/false signal and needs no reflected value.
 
-Force one with `--technique union|error|blind`. These read paths do not write database rows. The
-union path adds the forged row to the `posts` cache for the rest of the request.
+Force one with `--technique union|error|blind`. These read paths do not write database rows.
 
 ### shell — command execution
 
