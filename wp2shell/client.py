@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import ssl
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Optional
+
+# Targets are frequently reached via self-signed or otherwise unverifiable certs; this tool's
+# job is to reach them, not to validate their PKI.
+_INSECURE_SSL_CONTEXT = ssl._create_unverified_context()
 
 # A deliberately malformed path (no host, no port) for which wp_parse_url() returns false.
 # The client never dials it; its only job is to seed one WP_Error into the batch's request
@@ -48,7 +53,9 @@ class BatchClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.user_agent = user_agent
-        handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else []
+        handlers = [urllib.request.HTTPSHandler(context=_INSECURE_SSL_CONTEXT)]
+        if proxy:
+            handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
         self._opener = urllib.request.build_opener(*handlers)
 
     @property

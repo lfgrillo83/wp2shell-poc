@@ -17,7 +17,7 @@ import uuid
 import zipfile
 from typing import Dict, Optional, Tuple
 
-from .client import TargetError
+from .client import _INSECURE_SSL_CONTEXT, TargetError
 
 _MARKER = "WP2SHELL"
 
@@ -39,7 +39,10 @@ class AdminSession:
         self._slug = "wp2shell_" + secrets.token_hex(4)
         self._token = secrets.token_hex(16)
         self._jar = http.cookiejar.CookieJar()
-        handlers = [urllib.request.HTTPCookieProcessor(self._jar)]
+        handlers = [
+            urllib.request.HTTPCookieProcessor(self._jar),
+            urllib.request.HTTPSHandler(context=_INSECURE_SSL_CONTEXT),
+        ]
         if proxy:
             handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
         self._opener = urllib.request.build_opener(*handlers)
