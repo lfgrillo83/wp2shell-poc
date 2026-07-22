@@ -9,6 +9,22 @@ supplied administrator credentials or by first exercising the SQLi-to-admin brid
 
 ![wp2shell — the `shell` command exercising the pre-auth SQLi-to-admin bridge](docs/shell.svg)
 
+## Differences from upstream
+
+This is a fork of [Icex0/wp2shell-poc](https://github.com/Icex0/wp2shell-poc) with two additions:
+
+- **`waf-check` command** (`wp2shell/waf_bypass.py`) — non-destructively probes whether a
+  `rest_route`/`wp-json` block (WAF, edge rule, or security plugin) can be bypassed. It fires a
+  battery of known-weak filter implementations — key case variants, URL-encoding tricks, path
+  obfuscation (`//wp-json/`, `/./wp-json/`), and method/header spoofing (`HEAD`/`OPTIONS`/`PUT`,
+  `X-Forwarded-For`, `User-Agent`) — and confirms each candidate against the real REST index JSON
+  response rather than trusting a non-403 status code. This exists because a REST API block is the
+  most common thing standing between this tool's SQLi chain and a target.
+- **Unverified TLS everywhere** — `BatchClient`, `PreAuthAdminCreator`, and `AdminSession` now open
+  requests through an SSL context with certificate verification disabled
+  (`ssl._create_unverified_context()`), so a self-signed or otherwise unverifiable cert on the
+  target no longer blocks the tool. Verifying the target's PKI isn't this tool's job.
+
 ## Affected versions
 
 Searchlight Cyber's advisory lists these wp2shell RCE exposure ranges:
@@ -101,6 +117,19 @@ so a failed confirmation doesn't prove the bug is absent.
 ./wp2shell.py check targets.txt          # scan every URL in the file
 ```
 
+### waf-check — probe a REST API block for a bypass
+
+```
+./wp2shell.py waf-check http://target
+./wp2shell.py waf-check targets.txt      # scan every URL in the file
+```
+
+Only probes a target whose REST index (`/?rest_route=/`) is actually blocked (`401`, `403`, `406`,
+`429`, or `999`); targets that aren't blocked, or that fail outright, are skipped. For each
+technique that succeeds it prints the technique name, the response status, and a ready-to-run
+`curl` PoC. All requests are read-only (`GET`/`HEAD`/`OPTIONS`/`PUT` with no body) against the REST
+index route and change no state on the target.
+
 ### read — extract data through SQL injection
 
 ```
@@ -150,6 +179,7 @@ administrator, that generated account is removed automatically after the shell s
 | `--sleep N`         | check      | Delay used by the timing fallback for `--confirm-sqli`.              |
 | `--samples N`       | check      | Timing pairs used by the timing fallback for `--confirm-sqli`.       |
 | `--confirm-sqli`    | check      | Also send an active SQLi confirmation payload.                       |
+| `--workers N`       | waf-check  | Concurrent target probes (default 16).                               |
 | `--preset`          | read       | `fingerprint` or `users`.                                            |
 | `--technique`       | read       | `auto` (default), `union` (in-band, forges a fake post), `error` (in-band, needs visible DB errors), or `blind`. |
 | `--query`           | read       | A scalar SQL expression to read.                                     |
